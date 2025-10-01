@@ -1,0 +1,6 @@
+flask
+python-dotenv
+numpy
+pandas
+geopandas
+scikit-learn==1.6.1
