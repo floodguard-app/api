@@ -5,6 +5,8 @@ from shapely.geometry import Point
 import requests
 from geopy.geocoders import Nominatim
 from geopy.extra.rate_limiter import RateLimiter
+from geopy.distance import geodesic
+import pandas as pd
 
 from .config import OPENWEATHER_API_KEY
 
@@ -187,3 +189,108 @@ def get_weather_forecast_24h(lat, lon):
     except requests.exceptions.RequestException as e:
         print(f"Erro ao chamar a API do OpenWeather (Forecast): {e}")
         return None
+    
+
+def accumulated_rain(lat_evento, lon_evento, datahora_ref, medidas, estacoes, chuva_prox_24h=0, k=5, p=2, max_dist_km=20):
+    def idw_rain(inicio, fim):
+        # Filtra medidas no período
+        medidas_periodo = medidas[medidas["datahora"].between(inicio, fim)]
+        chuva_estacoes = medidas_periodo.groupby("codEstacao")["valorMedida"].sum().reset_index()
+        chuva_estacoes = chuva_estacoes.merge(estacoes, on="codEstacao", how="inner")
+
+        # Calcula distâncias
+        chuva_estacoes["dist"] = [
+            geodesic((lat_evento, lon_evento), (float(str(lat).replace(",", ".")), float(str(lon).replace(",", ".")))).km
+            for lat, lon in zip(chuva_estacoes["latitude"], chuva_estacoes["longitude"])
+        ]
+
+        # Filtra estações dentro do raio
+        chuva_estacoes = chuva_estacoes[chuva_estacoes["dist"] <= max_dist_km]
+
+        if chuva_estacoes.empty:
+            return np.nan
+
+        # Seleciona até k mais próximos
+        vizinhos = chuva_estacoes.nsmallest(k, "dist")
+
+        # Se tiver estação exatamente no ponto
+        if any(vizinhos["dist"] == 0):
+            return vizinhos.loc[vizinhos["dist"] == 0, "valorMedida"].values[0]
+
+        # IDW
+        vizinhos["valorMedida"] = pd.to_numeric(vizinhos["valorMedida"], errors="coerce")
+        vizinhos = vizinhos.dropna(subset=["valorMedida"])
+
+        weights = 1 / (vizinhos["dist"] ** p)
+        return (vizinhos["valorMedida"] * weights).sum() / weights.sum()
+    
+    # Calcula acumulados
+    chuva_24h = idw_rain(datahora_ref - pd.Timedelta(hours=24), datahora_ref)
+    chuva_48h = idw_rain(datahora_ref - pd.Timedelta(hours=48), datahora_ref)
+
+    print("Chuva 24h calculada:", chuva_24h)
+    print("Chuva 48h calculada:", chuva_48h)
+
+    # O valor de chuva 48 será as próximas 24h + as 24h anteriores
+    # O valor de chuva 72 será as próximas 24h + as 48h anteriores
+    return {"chuva_48h": chuva_24h + chuva_prox_24h, "chuva_72h": chuva_48h + chuva_prox_24h}
+
+
+def consecutive_rainy_days(lat_evento, lon_evento, data_evento, medidas, estacoes, limiar_chuva=0.2, max_dias_verificar=30, k=5, p=2, max_dist_km=20):
+    """
+    Calcula o número de dias consecutivos com chuva acima de um limiar
+    antes da data do evento.
+    """
+    dias_consecutivos = 0
+    # Normaliza a data do evento para garantir que começamos a verificação a partir do dia anterior
+    data_base = data_evento.normalize()
+
+    def idw_rain(inicio, fim):
+        # Filtra medidas no período
+        medidas_periodo = medidas[medidas["datahora"].between(inicio, fim)]
+        chuva_estacoes = medidas_periodo.groupby("codEstacao")["valorMedida"].sum().reset_index()
+        chuva_estacoes = chuva_estacoes.merge(estacoes, on="codEstacao", how="inner")
+
+        # Calcula distâncias
+        chuva_estacoes["dist"] = [
+            geodesic((lat_evento, lon_evento), (float(str(lat).replace(",", ".")), float(str(lon).replace(",", ".")))).km
+            for lat, lon in zip(chuva_estacoes["latitude"], chuva_estacoes["longitude"])
+        ]
+
+        # Filtra estações dentro do raio
+        chuva_estacoes = chuva_estacoes[chuva_estacoes["dist"] <= max_dist_km]
+
+        if chuva_estacoes.empty:
+            return np.nan
+
+        # Seleciona até k mais próximos
+        vizinhos = chuva_estacoes.nsmallest(k, "dist")
+
+        # Se tiver estação exatamente no ponto
+        if any(vizinhos["dist"] == 0):
+            return vizinhos.loc[vizinhos["dist"] == 0, "valorMedida"].values[0]
+
+        # IDW
+        vizinhos["valorMedida"] = pd.to_numeric(vizinhos["valorMedida"], errors="coerce")
+        vizinhos = vizinhos.dropna(subset=["valorMedida"])
+
+        weights = 1 / (vizinhos["dist"] ** p)
+        return (vizinhos["valorMedida"] * weights).sum() / weights.sum()
+
+    # Loop para verificar os dias anteriores, até o limite de 'max_dias_verificar'
+    for i in range(1, max_dias_verificar + 1):
+        # Define a janela de 24h para o dia anterior que estamos verificando
+        dia_verificar_fim = data_base - pd.Timedelta(days=i-1) - pd.Timedelta(seconds=1)
+        dia_verificar_inicio = data_base - pd.Timedelta(days=i)
+
+        # Usa a função chuva_idw para calcular o total de chuva nesse dia
+        chuva_do_dia = idw_rain(dia_verificar_inicio, dia_verificar_fim,)
+
+        # Se a chuva no dia for maior que o limiar, incrementa o contador
+        if chuva_do_dia > limiar_chuva:
+            dias_consecutivos += 1
+        else:
+            # Se não choveu, a sequência é quebrada, então paramos o loop
+            break
+
+    return dias_consecutivos
