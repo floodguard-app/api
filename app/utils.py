@@ -1,6 +1,34 @@
 import numpy as np
+from datetime import datetime, timezone
 import geopandas as gpd
 from shapely.geometry import Point
+import requests
+from geopy.geocoders import Nominatim
+from geopy.extra.rate_limiter import RateLimiter
+
+from .config import OPENWEATHER_API_KEY
+
+geolocator = Nominatim(user_agent="meu_app_previsao_enchente_sp")
+geocode_reverso_com_delay = RateLimiter(geolocator.reverse, min_delay_seconds=1)
+
+def get_neighbourhood(lat, lon):
+    """
+    Usa a geocodificação reversa para encontrar o bairro de um par de coordenadas.
+    """
+    try:
+        location = geocode_reverso_com_delay((lat, lon), language='pt-br', exactly_one=True)
+
+        if location:
+            address = location.raw.get('address', {})
+            bairro = address.get('suburb') or address.get('city_district') or address.get('neighbourhood')
+            return bairro if bairro else "Bairro Desconhecido"
+        else:
+            return "Localização Não Encontrada"
+
+    except Exception as e:
+        print(f"Erro na geocodificação reversa: {e}")
+        return
+    
 
 def analyze_floodable_sections(lat_evento, lon_evento, gdf_trechos_agua, raio_km=5):
     """
@@ -121,3 +149,41 @@ def analyze_local_relief(lat_evento, lon_evento, gdf_relevo):
     except Exception as e:
         print(f"Erro em analyze_local_relief: {e}")
         return features_padrao
+    
+
+def get_weather_forecast_24h(lat, lon):
+    """Busca a previsão do tempo para as próximas 24 horas (em intervalos de 3h)."""
+    url = f"https://api.openweathermap.org/data/2.5/forecast?lat={lat}&lon={lon}&appid={OPENWEATHER_API_KEY}&units=metric&lang=pt_br"
+    try:
+        response = requests.get(url)
+        response.raise_for_status()
+        data = response.json()
+
+        forecast_data = {
+            # "city_name": data['city']['name'],
+            # "entries": [],
+            "chuva_24h": 0.0,
+            "intensidade_max_24h": 0.0
+        }
+
+        for item in data['list'][:8]:  # próximos 24h
+            rain_3h = item.get('rain', {}).get('3h', 0.0)
+            forecast_data['chuva_24h'] += rain_3h
+
+            # Atualiza intensidade máxima se necessário
+            if rain_3h > forecast_data['intensidade_max_24h']:
+                forecast_data['intensidade_max_24h'] = rain_3h
+
+            # forecast_data['entries'].append({
+            #     "datetime_utc": datetime.fromtimestamp(item['dt'], timezone.utc).strftime('%Y-%m-%d %H:%M:%S'),
+            #     "temp": item['main']['temp'],
+            #     "description": item['weather'][0]['description'],
+            #     "rain_3h": rain_3h,
+            #     "pop": item.get('pop', 0)
+            # })
+
+        return forecast_data
+
+    except requests.exceptions.RequestException as e:
+        print(f"Erro ao chamar a API do OpenWeather (Forecast): {e}")
+        return None
