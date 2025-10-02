@@ -3,9 +3,9 @@ from datetime import datetime
 import pandas as pd
 from .model import model
 from .shapefiles import gdf_trechos_vulneraveis, gdf_relevo_sp
-from .utils import get_neighbourhood, analyze_floodable_sections, analyze_local_relief, get_weather_forecast_24h, accumulated_rain, consecutive_rainy_days
-from .sheets import DadosMeteorologicos
-# from .sheets import medidas_pluviometros, estacoes_pluviometricas, medidas_hidrologicas, estacoes_hidrologicas
+from .utils import get_neighbourhood, analyze_floodable_sections, analyze_local_relief, get_weather_forecast_24h, accumulated_rain, consecutive_rainy_days, obter_nivel_rio_proximo
+# from .sheets import DadosMeteorologicos
+from .sheets import medidas_pluviometros, estacoes_pluviometricas, medidas_hidrologicas, estacoes_hidrologicas
 
 def create_app():
     app = Flask(__name__)
@@ -111,30 +111,45 @@ def create_app():
             features_relief = analyze_local_relief(lat, lon, gdf_relevo_sp) # AMPLIT_ALT, DDREN_MED, DECLIV_MED, E_HIDR_MED, GEOL_CPRM, GEOL_rev, NIVEL_1
             weather_forecast = get_weather_forecast_24h(lat, lon) # chuva_24h, intensidade_max_24h
 
-            dados = DadosMeteorologicos()
-            medidas_pluv = dados.medidas_pluviometros
-            estacoes_pluv = dados.estacoes_pluviometricas
-        
-            # TODO: preencher períodos sem informações
-            acc_rain = accumulated_rain(lat, lon, data_atual, medidas_pluv, estacoes_pluv, 0) # chuva_48h, chuva_72h
-            consec_rain_days = consecutive_rainy_days(lat, lon, data_atual, medidas_pluv, estacoes_pluv)
-
             if weather_forecast is None:
                 return jsonify({"error": "Erro ao obter a previsão do tempo"}), 500
             
+            # dados = DadosMeteorologicos()
+            # medidas_pluviometros = dados.medidas_pluviometros
+            # estacoes_pluviometricas = dados.estacoes_pluviometricas
+        
+            print(medidas_pluviometros.head())
+            print(estacoes_pluviometricas.head())
+
+            # TODO: preencher períodos sem informações
+            acc_rain = accumulated_rain(lat, lon, data_atual, medidas_pluviometros, estacoes_pluviometricas, weather_forecast["chuva_24h"]) # chuva_48h, chuva_72h
+            consec_rain_days = consecutive_rainy_days(lat, lon, data_atual, medidas_pluviometros, estacoes_pluviometricas)
+
+            inicio_dia = data_atual.normalize()
+            fim_dia = inicio_dia + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
+
+            nivel_rio_24h = obter_nivel_rio_proximo(lat, lon, inicio_dia, fim_dia, medidas_hidrologicas, estacoes_hidrologicas)
+
             features = {
-                "data_evento": data_atual, 
+                "data_evento": data_atual.to_pydatetime().strftime("%Y-%m-%d"), 
                 "bairro": neighbourhood,
                 **features_floodable, 
                 **features_relief, 
                 **weather_forecast,
                 **acc_rain,
-                "dias_consec_chuva": consec_rain_days
+                "dias_consec_chuva": consec_rain_days,
+                "nivel_rio_24h": nivel_rio_24h
             }
 
-            return jsonify(features)
-            # prediction = model.predict([features])
-            # return jsonify({"prediction": prediction.tolist()})
+            # return jsonify(features)
+            print("Features para predição:", features)
+
+
+            feature_order = model.feature_names_in_
+            X = pd.DataFrame([features], columns=feature_order)
+            prediction = model.predict(X)
+
+            return jsonify({"prediction": prediction.tolist()})
         except Exception as e:
             return jsonify({"error": str(e)}), 400
 

@@ -191,42 +191,10 @@ def get_weather_forecast_24h(lat, lon):
         return None
     
 
-def accumulated_rain(lat_evento, lon_evento, datahora_ref, medidas, estacoes, chuva_prox_24h=0, k=5, p=2, max_dist_km=20):
-    def idw_rain(inicio, fim):
-        # Filtra medidas no período
-        medidas_periodo = medidas[medidas["datahora"].between(inicio, fim)]
-        chuva_estacoes = medidas_periodo.groupby("codEstacao")["valorMedida"].sum().reset_index()
-        chuva_estacoes = chuva_estacoes.merge(estacoes, on="codEstacao", how="inner")
-
-        # Calcula distâncias
-        chuva_estacoes["dist"] = [
-            geodesic((lat_evento, lon_evento), (float(str(lat).replace(",", ".")), float(str(lon).replace(",", ".")))).km
-            for lat, lon in zip(chuva_estacoes["latitude"], chuva_estacoes["longitude"])
-        ]
-
-        # Filtra estações dentro do raio
-        chuva_estacoes = chuva_estacoes[chuva_estacoes["dist"] <= max_dist_km]
-
-        if chuva_estacoes.empty:
-            return np.nan
-
-        # Seleciona até k mais próximos
-        vizinhos = chuva_estacoes.nsmallest(k, "dist")
-
-        # Se tiver estação exatamente no ponto
-        if any(vizinhos["dist"] == 0):
-            return vizinhos.loc[vizinhos["dist"] == 0, "valorMedida"].values[0]
-
-        # IDW
-        vizinhos["valorMedida"] = pd.to_numeric(vizinhos["valorMedida"], errors="coerce")
-        vizinhos = vizinhos.dropna(subset=["valorMedida"])
-
-        weights = 1 / (vizinhos["dist"] ** p)
-        return (vizinhos["valorMedida"] * weights).sum() / weights.sum()
+def accumulated_rain(lat_evento, lon_evento, datahora_ref, medidas, estacoes, chuva_prox_24h=0):
     
-    # Calcula acumulados
-    chuva_24h = idw_rain(datahora_ref - pd.Timedelta(hours=24), datahora_ref)
-    chuva_48h = idw_rain(datahora_ref - pd.Timedelta(hours=48), datahora_ref)
+    chuva_24h = chuva_idw(lat_evento, lon_evento, datahora_ref - pd.Timedelta(hours=24), datahora_ref, medidas, estacoes)
+    chuva_48h = chuva_idw(lat_evento, lon_evento, datahora_ref - pd.Timedelta(hours=48), datahora_ref, medidas, estacoes)
 
     print("Chuva 24h calculada:", chuva_24h)
     print("Chuva 48h calculada:", chuva_48h)
@@ -245,38 +213,6 @@ def consecutive_rainy_days(lat_evento, lon_evento, data_evento, medidas, estacoe
     # Normaliza a data do evento para garantir que começamos a verificação a partir do dia anterior
     data_base = data_evento.normalize()
 
-    def idw_rain(inicio, fim):
-        # Filtra medidas no período
-        medidas_periodo = medidas[medidas["datahora"].between(inicio, fim)]
-        chuva_estacoes = medidas_periodo.groupby("codEstacao")["valorMedida"].sum().reset_index()
-        chuva_estacoes = chuva_estacoes.merge(estacoes, on="codEstacao", how="inner")
-
-        # Calcula distâncias
-        chuva_estacoes["dist"] = [
-            geodesic((lat_evento, lon_evento), (float(str(lat).replace(",", ".")), float(str(lon).replace(",", ".")))).km
-            for lat, lon in zip(chuva_estacoes["latitude"], chuva_estacoes["longitude"])
-        ]
-
-        # Filtra estações dentro do raio
-        chuva_estacoes = chuva_estacoes[chuva_estacoes["dist"] <= max_dist_km]
-
-        if chuva_estacoes.empty:
-            return np.nan
-
-        # Seleciona até k mais próximos
-        vizinhos = chuva_estacoes.nsmallest(k, "dist")
-
-        # Se tiver estação exatamente no ponto
-        if any(vizinhos["dist"] == 0):
-            return vizinhos.loc[vizinhos["dist"] == 0, "valorMedida"].values[0]
-
-        # IDW
-        vizinhos["valorMedida"] = pd.to_numeric(vizinhos["valorMedida"], errors="coerce")
-        vizinhos = vizinhos.dropna(subset=["valorMedida"])
-
-        weights = 1 / (vizinhos["dist"] ** p)
-        return (vizinhos["valorMedida"] * weights).sum() / weights.sum()
-
     # Loop para verificar os dias anteriores, até o limite de 'max_dias_verificar'
     for i in range(1, max_dias_verificar + 1):
         # Define a janela de 24h para o dia anterior que estamos verificando
@@ -284,7 +220,7 @@ def consecutive_rainy_days(lat_evento, lon_evento, data_evento, medidas, estacoe
         dia_verificar_inicio = data_base - pd.Timedelta(days=i)
 
         # Usa a função chuva_idw para calcular o total de chuva nesse dia
-        chuva_do_dia = idw_rain(dia_verificar_inicio, dia_verificar_fim,)
+        chuva_do_dia = chuva_idw(lat_evento, lon_evento, dia_verificar_inicio, dia_verificar_fim, medidas, estacoes)
 
         # Se a chuva no dia for maior que o limiar, incrementa o contador
         if chuva_do_dia > limiar_chuva:
@@ -294,3 +230,86 @@ def consecutive_rainy_days(lat_evento, lon_evento, data_evento, medidas, estacoe
             break
 
     return dias_consecutivos
+
+
+def chuva_idw(lat_evento, lon_evento, inicio, fim, medidas, estacoes, k=5, p=2, max_dist_km=20):
+
+    # Filtra medidas no período
+    medidas_periodo = medidas[medidas["datahora"].between(inicio, fim)]
+    chuva_estacoes = medidas_periodo.groupby("codEstacao")["valorMedida"].sum().reset_index()
+
+    # Junta com lat/lon
+    chuva_estacoes = chuva_estacoes.merge(estacoes, on="codEstacao", how="inner")
+
+    # Calcula distâncias
+    chuva_estacoes["dist"] = [
+        geodesic((lat_evento, lon_evento), (float(lat), float(lon))).km
+        for lat, lon in zip(chuva_estacoes["latitude"], chuva_estacoes["longitude"])
+    ]
+
+    # Filtra estações dentro do raio
+    chuva_estacoes = chuva_estacoes[chuva_estacoes["dist"] <= max_dist_km]
+
+    if chuva_estacoes.empty:
+        print("Nenhuma estação dentro do raio máximo.")
+        return np.nan
+
+    # Seleciona até k mais próximos
+    vizinhos = chuva_estacoes.nsmallest(k, "dist")
+
+    # Se tiver estação exatamente no ponto
+    if any(vizinhos["dist"] == 0):
+        return vizinhos.loc[vizinhos["dist"] == 0, "valorMedida"].values[0]
+
+    # IDW
+    weights = 1 / (vizinhos["dist"] ** p)
+    chuva = (vizinhos["valorMedida"] * weights).sum() / weights.sum()
+
+    return chuva
+
+
+def obter_nivel_rio_proximo(lat_evento, lon_evento, inicio, fim, medidas_hidro, estacoes_hidro, max_dist_km=20):
+    """
+    Encontra a estação hidrológica mais próxima e retorna o seu NÍVEL MÉDIO no período.
+    """
+    medidas_periodo = medidas_hidro[medidas_hidro["datahora"].between(inicio, fim)]
+    if medidas_periodo.empty:
+        return np.nan
+
+    # Filtra pelo sensor de 'nível'
+    medidas_nivel = medidas_periodo[medidas_periodo['sensor'] == 'nível']
+    if medidas_nivel.empty:
+        return np.nan
+
+    # Calcula a MÉDIA do nível para cada estação no período
+    dados_estacoes = medidas_nivel.groupby('codEstacao', as_index=False).agg(valorMedida=('valorMedida', 'mean'))
+    dados_estacoes.dropna(subset=['valorMedida'], inplace=True)
+    if dados_estacoes.empty:
+        return np.nan
+
+    # Junta com os dados das estações para obter as coordenadas
+    dados_estacoes = dados_estacoes.merge(estacoes_hidro, on="codEstacao", how="inner")
+    if dados_estacoes.empty:
+        return np.nan
+
+    # Calcula a distância do evento para TODAS as estações
+    dados_estacoes["dist"] = dados_estacoes.apply(
+        lambda r: geodesic((lat_evento, lon_evento), (r["latitude"], r["longitude"])).km,
+        axis=1
+    )
+
+    # Filtra as estações que estão dentro do raio máximo
+    estacoes_no_raio = dados_estacoes[dados_estacoes["dist"] <= max_dist_km]
+    if estacoes_no_raio.empty:
+        return np.nan
+
+    # --- LÓGICA PRINCIPAL ALTERADA ---
+    # Encontra a 1 estação mais próxima (a linha com a menor distância)
+    vizinho_mais_proximo = estacoes_no_raio.nsmallest(1, 'dist')
+
+    # Se, por algum motivo, não encontrar, retorna NaN
+    if vizinho_mais_proximo.empty:
+        return np.nan
+
+    # Retorna o valor de medida da estação mais próxima
+    return vizinho_mais_proximo['valorMedida'].iloc[0]
