@@ -1,5 +1,5 @@
 import numpy as np
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import geopandas as gpd
 from shapely.geometry import Point
 import requests
@@ -117,16 +117,13 @@ def analyze_local_relief(lat_evento, lon_evento, gdf_relevo):
         dict: Um dicionário com as features de relevo.
     """
 
-    colunas_relevo = [
-        'NIVEL_1', 'DECLIV_MED', 'AMPLIT_ALT',
-        'DDREN_MED', 'E_HIDR_MED', 'GEOL_CPRM', 'GEOL_rev'
-    ]
+    colunas_relevo = [ 'DECLIV_MED', 'AMPLIT_ALT', 'DDREN_MED', 'E_HIDR_MED' ]
 
     # Dicionário padrão com valores nulos (ou 'Desconhecido') caso não encontre
     features_padrao = {col: np.nan for col in colunas_relevo}
-    features_padrao['NIVEL_1'] = 'Desconhecido'
-    features_padrao['GEOL_CPRM'] = 'Desconhecido'
-    features_padrao['GEOL_rev'] = 'Desconhecido'
+    # features_padrao['NIVEL_1'] = 'Desconhecido'
+    # features_padrao['GEOL_CPRM'] = 'Desconhecido'
+    # features_padrao['GEOL_rev'] = 'Desconhecido'
 
     try:
         # Cria o ponto a partir da coordenada
@@ -233,36 +230,76 @@ def consecutive_rainy_days(lat_evento, lon_evento, data_evento, medidas, estacoe
 
 
 def chuva_idw(lat_evento, lon_evento, inicio, fim, medidas, estacoes, k=5, p=2, max_dist_km=20):
+    """
+    Calcula a chuva interpolada em um ponto usando o método IDW (Inverse Distance Weighting).
 
-    # Filtra medidas no período
-    medidas_periodo = medidas[medidas["datahora"].between(inicio, fim)]
+    Args:
+        lat_evento (float): Latitude do ponto de interesse.
+        lon_evento (float): Longitude do ponto de interesse.
+        inicio (datetime/string): Data/hora de início do período.
+        fim (datetime/string): Data/hora de fim do período.
+        medidas (pd.DataFrame): DataFrame com as colunas ['datahora', 'codEstacao', 'valorMedida'].
+        estacoes (pd.DataFrame): DataFrame com as colunas ['codEstacao', 'latitude', 'longitude'].
+        k (int): Número de estações vizinhas a serem consideradas.
+        p (int/float): Expoente de ponderação para o IDW.
+        max_dist_km (float): Raio máximo de busca de estações em km.
+
+    Returns:
+        float: Valor da chuva interpolada ou np.nan se não houver estações no raio.
+    """
+
+    # 0. Limpeza e Conversão de Tipo (IMPORTANTE para 'valorMedida')
+    # Antes de somar, precisamos garantir que 'valorMedida' é float, tratando a vírgula.
+    medidas_periodo = medidas[medidas["datahora"].between(inicio, fim)].copy()
+    
+    try:
+        medidas_periodo["valorMedida"] = (
+            medidas_periodo["valorMedida"]
+            .astype(str)
+            .str.replace(',', '.', regex=False)
+            .astype(float)
+        )
+    except Exception as e:
+        print(f"Erro ao converter 'valorMedida' para float. Verifique os dados: {e}")
+        return np.nan
+
+    # 1. Filtra medidas no período e calcula a soma da chuva por estação
+    # O .sum() agora funcionará como soma numérica.
     chuva_estacoes = medidas_periodo.groupby("codEstacao")["valorMedida"].sum().reset_index()
 
-    # Junta com lat/lon
+    # 2. Junta com lat/lon das estações
     chuva_estacoes = chuva_estacoes.merge(estacoes, on="codEstacao", how="inner")
-
-    # Calcula distâncias
+    
+    # 3. Calcula distâncias (IMPORTANTE: Conversão de 'latitude'/'longitude')
+    # O replace é aplicado aqui para tratar as strings de lat/lon com vírgula.
     chuva_estacoes["dist"] = [
-        geodesic((lat_evento, lon_evento), (float(lat), float(lon))).km
-        for lat, lon in zip(chuva_estacoes["latitude"], chuva_estacoes["longitude"])
+        geodesic((lat_evento, lon_evento), (
+            float(lat.replace(',', '.')), 
+            float(lon.replace(',', '.'))
+        )).km
+        for lat, lon in zip(chuva_estacoes["latitude"].astype(str), chuva_estacoes["longitude"].astype(str))
     ]
 
-    # Filtra estações dentro do raio
-    chuva_estacoes = chuva_estacoes[chuva_estacoes["dist"] <= max_dist_km]
+    # 4. Filtra estações dentro do raio
+    chuva_estacoes = chuva_estacoes[chuva_estacoes["dist"] <= max_dist_km].copy()
 
     if chuva_estacoes.empty:
         print("Nenhuma estação dentro do raio máximo.")
         return np.nan
 
-    # Seleciona até k mais próximos
+    # 5. Seleciona até k mais próximos
     vizinhos = chuva_estacoes.nsmallest(k, "dist")
 
     # Se tiver estação exatamente no ponto
     if any(vizinhos["dist"] == 0):
+        # Retorna o valor direto
         return vizinhos.loc[vizinhos["dist"] == 0, "valorMedida"].values[0]
 
-    # IDW
+    # 6. IDW (Inverse Distance Weighting)
+    # weights e o cálculo final agora funcionam pois vizinhos["valorMedida"] é float
     weights = 1 / (vizinhos["dist"] ** p)
+    
+    # Cálculo da média ponderada: (valorMedida * weights) / weights.sum()
     chuva = (vizinhos["valorMedida"] * weights).sum() / weights.sum()
 
     return chuva
@@ -313,3 +350,58 @@ def obter_nivel_rio_proximo(lat_evento, lon_evento, inicio, fim, medidas_hidro, 
 
     # Retorna o valor de medida da estação mais próxima
     return vizinho_mais_proximo['valorMedida'].iloc[0]
+
+
+def acumulado_ultimos_dias(lat_evento, lon_evento, data_referencia, medidas, estacoes, dias=5, **kwargs):
+    """
+    Retorna a chuva acumulada dia por dia para o ponto de interesse
+    nos últimos 'dias' (padrão: 5).
+
+    Args:
+        lat_evento (float): Latitude do ponto de interesse.
+        lon_evento (float): Longitude do ponto de interesse.
+        data_referencia (datetime/string): Data do último dia a ser considerado.
+        medidas (pd.DataFrame): DataFrame com os dados das medidas.
+        estacoes (pd.DataFrame): DataFrame com os dados das estações.
+        dias (int): Número de dias a serem calculados.
+        **kwargs: Argumentos adicionais para passar para a função chuva_idw (k, p, max_dist_km).
+
+    Returns:
+        dict: Dicionário com as datas (string ISO) e o valor da chuva interpolada.
+    """
+    
+    # Garante que a data de referência é um objeto datetime (apenas a data)
+    if isinstance(data_referencia, str):
+        data_referencia = pd.to_datetime(data_referencia).normalize()
+    else:
+        data_referencia = data_referencia.normalize()
+        
+    resultados = {}
+    
+    # O loop vai da data mais antiga (data_referencia - 5 dias) até a data de referência
+    for i in range(dias, 0, -1):
+        # A data de INÍCIO do dia (00:00)
+        data_inicio = data_referencia - timedelta(days=i)
+        
+        # A data de FIM do dia (00:00 do dia seguinte)
+        data_fim = data_inicio + timedelta(days=1)
+        
+        # Chama a função IDW para o período de 24 horas do dia
+        chuva_dia = chuva_idw(
+            lat_evento=lat_evento, 
+            lon_evento=lon_evento, 
+            inicio=data_inicio, 
+            fim=data_fim, 
+            medidas=medidas, 
+            estacoes=estacoes, 
+            **kwargs # Passa k, p e max_dist_km
+        )
+        
+        # Formata a chave do dicionário como string ISO (YYYY-MM-DD)
+        data_str = data_inicio.strftime('%Y-%m-%d')
+        
+        # Armazena o resultado (se for np.nan, será um float NaN, o que é aceitável em JSON/dict)
+        resultados[data_str] = round(chuva_dia, 2) if not np.isnan(chuva_dia) else None
+
+    # O formato solicitado é um "objeto", que no Python é um dicionário
+    return resultados
