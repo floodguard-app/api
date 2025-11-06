@@ -146,11 +146,11 @@ def create_app():
             data_atual = pd.Timestamp(datetime.now()) # data_evento
             neighbourhood = get_neighbourhood(lat, lon) # bairro
             try:
-                neighbourhood = bairro_encoder.transform(["Vila Madalena"])[0]
-                print("Bairro codificado:", neighbourhood)
+                neighbourhood_cod = bairro_encoder.transform(["Vila Madalena"])[0]
+                print("Bairro codificado:", neighbourhood_cod)
             except ValueError as e:
                 print(f"AVISO: Encontrado um bairro não visto no treino: {e}")
-                neighbourhood = -1
+                neighbourhood_cod = -1
 
             features_floodable = analyze_floodable_sections(lat, lon, gdf_trechos_vulneraveis) # n_trechos_alto_impacto_5km, n_trechos_vulneraveis_5km, risco_medio_trechos_5km
             features_relief = analyze_local_relief(lat, lon, gdf_relevo_sp) # AMPLIT_ALT, DDREN_MED, DECLIV_MED, E_HIDR_MED
@@ -163,7 +163,7 @@ def create_app():
             consec_rain_days = get_consecutive_rainy_days(lat, lon, data_atual, medidas_pluviometros, estacoes_pluviometricas)
 
             features = {
-                "bairro": neighbourhood,
+                "bairro": neighbourhood_cod,
                 **features_floodable, 
                 **features_relief, 
                 **weather_forecast,
@@ -184,7 +184,17 @@ def create_app():
                 result_text = 'RISCO DE ENCHENTE' if pred == 1 else 'SEM RISCO DE ENCHENTE'
                 results.append((result_text, f"{prob_flood:.2%}"))
 
-            return jsonify(results)
+            return jsonify({
+                "previsao": results[0][0],
+                "probabilidade_enchente": results[0][1],
+                "features": {
+                    "bairro": neighbourhood,
+                    **features_floodable, 
+                    **features_relief, 
+                    **weather_forecast,
+                    "dias_consec_chuva": consec_rain_days,
+                }
+            })
         except Exception as e:
             return jsonify({"error": str(e)}), 400
         
