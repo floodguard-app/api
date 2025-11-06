@@ -13,6 +13,6 @@ SHAPEFILES = {
     "relevo": "data/UBC_v2.shp"
 }
 SHEETS = {
-    "pluviometros": "data/pluviometrica_outubro.csv",
-    "hidrologicas": "data/hidrologica_setembro.csv",
+    "pluviometros": "data/pluviometrica_novembro.csv",
+    "hidrologicas": "data/hidrologica_novembro.csv",
 }
