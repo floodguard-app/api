@@ -5,6 +5,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 OPENWEATHER_API_KEY = os.getenv("OPENWEATHER_API_KEY")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 MODEL_PATH = "data/modelo.joblib"
 BAIRRO_ENCODER_PATH = "data/label_encoder_bairro.joblib"

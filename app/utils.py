@@ -7,11 +7,49 @@ from geopy.geocoders import Nominatim
 from geopy.extra.rate_limiter import RateLimiter
 from geopy.distance import geodesic
 import pandas as pd
+import google.generativeai as genai
+from .config import OPENWEATHER_API_KEY, GEMINI_API_KEY 
 
-from .config import OPENWEATHER_API_KEY
 
 geolocator = Nominatim(user_agent="meu_app_previsao_enchente_sp")
 geocode_reverso_com_delay = RateLimiter(geolocator.reverse, min_delay_seconds=1)
+
+# Configure o Gemini
+if GEMINI_API_KEY:
+    genai.configure(api_key=GEMINI_API_KEY)
+
+def gerar_analise_gemini(dados):
+    """
+    Recebe um dicionário com os dados da predição e retorna um texto explicativo.
+    """
+    if not GEMINI_API_KEY:
+        return "Análise indisponível (Chave de API não configurada)."
+
+    try:
+        # Escolha um modelo rápido e eficiente
+        model = genai.GenerativeModel('gemini-2.5-flash')
+
+        # Monta o prompt com os dados recebidos
+        prompt = f"""
+        Você é um assistente especialista em hidrologia e segurança urbana para o aplicativo FloodGuard.
+        Analise os seguintes dados de risco de enchente para o bairro {dados.get('bairro')}:
+
+        - Previsão do Modelo: {dados.get('previsao')}
+        - Probabilidade Calculada: {dados.get('probabilidade')}
+        - Chuva nas últimas 24h: {dados.get('chuva_24h')} mm
+        - Previsão de intensidade máx: {dados.get('intensidade_max')} mm
+        - Dias consecutivos de chuva: {dados.get('dias_consec_chuva')}
+
+        Com base nisso, forneça uma análise curta (máximo 3 frases) e uma recomendação de segurança para o cidadão.
+        Se o risco for alto, seja direto e alertante. Se for baixo, seja tranquilizador mas cauteloso.
+        Responda em texto corrido, sem markdown complexo.
+        """
+
+        response = model.generate_content(prompt)
+        return response.text
+    except Exception as e:
+        print(f"Erro ao chamar Gemini: {e}")
+        return "Não foi possível gerar a análise detalhada no momento."
 
 def get_neighbourhood(lat, lon):
     """

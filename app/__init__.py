@@ -3,7 +3,7 @@ from datetime import datetime
 import pandas as pd
 from .model import model, bairro_encoder
 from .shapefiles import gdf_trechos_vulneraveis, gdf_relevo_sp
-from .utils import get_neighbourhood, analyze_floodable_sections, analyze_local_relief, get_weather_forecast_24h, accumulated_rain, consecutive_rainy_days as get_consecutive_rainy_days, obter_nivel_rio_proximo, acumulado_ultimos_dias
+from .utils import get_neighbourhood, analyze_floodable_sections, analyze_local_relief, get_weather_forecast_24h, accumulated_rain, consecutive_rainy_days as get_consecutive_rainy_days, obter_nivel_rio_proximo, acumulado_ultimos_dias, gerar_analise_gemini
 # from .sheets import DadosMeteorologicos
 from .sheets import medidas_pluviometros, estacoes_pluviometricas, medidas_hidrologicas, estacoes_hidrologicas
 
@@ -184,9 +184,22 @@ def create_app():
                 result_text = 'RISCO DE ENCHENTE' if pred == 1 else 'SEM RISCO DE ENCHENTE'
                 results.append((result_text, f"{prob_flood:.2%}"))
 
+            dados_para_analise = {
+                "bairro": neighbourhood,
+                "previsao": results[0][0],
+                "probabilidade": results[0][1],
+                "chuva_24h": weather_forecast.get("chuva_24h", 0),
+                "intensidade_max": weather_forecast.get("intensidade_max_24h", 0),
+                "dias_consec_chuva": consec_rain_days
+            }
+
+            # Chama a função do Gemini
+            texto_explicativo = gerar_analise_gemini(dados_para_analise)
+
             return jsonify({
                 "previsao": results[0][0],
                 "probabilidade_enchente": results[0][1],
+                "analise_ia": texto_explicativo,
                 "features": {
                     "bairro": neighbourhood,
                     **features_floodable, 
